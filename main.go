@@ -114,12 +114,16 @@ func process(cfg *cdcConfig) int {
 
 	var streamIDBytes []byte
 	if cfg.stream == "" {
-		streamResponse, err := createCDCStream(suitableClient, table.Id)
-		if err != nil {
-			logger.Error("error creating new CDC stream", "reason", err)
-			return 1
+		for {
+			streamResponse, err := createCDCStream(suitableClient, table.Id)
+			if err != nil {
+				logger.Error("error creating new CDC stream, going to retry", "reason", err)
+				<-time.After(time.Millisecond * 100)
+				continue
+			}
+			streamIDBytes = streamResponse.StreamId
+			break
 		}
-		streamIDBytes = streamResponse.StreamId
 		logger.Info("created a new CDC stream")
 	} else {
 		reverseParsedStreamID, err := ybdbid.TryParseFromString(cfg.stream)
