@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,12 +21,16 @@ import (
 	ybApi "github.com/radekg/yugabyte-db-go-proto/v2/yb/api"
 )
 
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
 func main() {
 
 	cfg := &cdcConfig{}
 
 	flag.StringVar(&cfg.database, "database", "", "database to use")
-	flag.StringVar(&cfg.logLevel, "log-level", "debug", "log level")
+	flag.StringVar(&cfg.logLevel, "log-level", "info", "log level")
 	flag.StringVar(&cfg.masters, "masters", "127.0.0.1:7100,127.0.0.1:7101,127.0.0.1:7102", "comma-delimited list of master addresses")
 	flag.StringVar(&cfg.stream, "stream-id", "", "stream ID")
 	flag.StringVar(&cfg.table, "table", "", "table to use")
@@ -89,7 +94,7 @@ func process(cfg *cdcConfig) int {
 		return 1
 	}
 
-	logger.Info("found host ports", "num-host-ports", len(hostPorts))
+	logger.Info("found host ports", "host-ports", hostPorts)
 
 	tabletLocations, err := listTabletLocations(ybdbClient, table.Id)
 	if err != nil {
@@ -104,25 +109,31 @@ func process(cfg *cdcConfig) int {
 
 	logger.Info("found tablet locations", "num-tablet-locations", len(tabletLocations))
 
-	suitableClient, err := getSuitableClient(hostPorts)
-	if err != nil {
-		logger.Error("error fetching suitable CDC client", "reason", err)
-		return 1
-	}
-
-	logger.Info("suitable single node client identified")
+	cp := newClientProvider(hostPorts)
 
 	var streamIDBytes []byte
 	if cfg.stream == "" {
 		for {
-			streamResponse, err := createCDCStream(suitableClient, table.Id)
+
+			c, err := cp.getClient(logger)
 			if err != nil {
+				logger.Error("could not get connected client, going to retry", "reason", err)
+				<-time.After(time.Millisecond * 100)
+				continue
+			}
+
+			streamResponse, err := createCDCStream(c, table.Id)
+			if err != nil {
+				c.Close()
 				logger.Error("error creating new CDC stream, going to retry", "reason", err)
 				<-time.After(time.Millisecond * 100)
 				continue
 			}
+			c.Close()
+
 			streamIDBytes = streamResponse.StreamId
 			break
+
 		}
 		logger.Info("created a new CDC stream")
 	} else {
@@ -150,7 +161,7 @@ func process(cfg *cdcConfig) int {
 	for _, location := range tabletLocations {
 		wg.Add(1)
 		go func(tabletID []byte) {
-			consume(ctx, logger, suitableClient, streamIDBytes, tabletID)
+			consume(ctx, logger, cp, streamIDBytes, tabletID)
 			wg.Done()
 		}(location.TabletId)
 	}
@@ -164,10 +175,17 @@ func process(cfg *cdcConfig) int {
 
 func consume(ctx context.Context,
 	logger hclog.Logger,
-	ybdbClient client.YBConnectedClient,
+	cp *clientProvider,
 	streamID, tabletID []byte) {
 
-	var checkpoint *ybApi.CDCCheckpointPB
+	checkpoint := &ybApi.CDCCheckpointPB{
+		OpId: &ybApi.OpIdPB{
+			Term:  pint64(0),
+			Index: pint64(0),
+		},
+	}
+
+	<-time.After(time.Millisecond * time.Duration(rand.Intn(100-10)+10))
 
 	for {
 
@@ -178,6 +196,12 @@ func consume(ctx context.Context,
 			// reiterate
 		}
 
+		c, err := cp.getClient(logger)
+		if err != nil {
+			logger.Error("failed fetching a client", "reason", err)
+			continue
+		}
+
 		request := &ybApi.GetChangesRequestPB{
 			StreamId:       streamID,
 			TabletId:       tabletID,
@@ -185,7 +209,7 @@ func consume(ctx context.Context,
 		}
 
 		response := &ybApi.GetChangesResponsePB{}
-		requestErr := ybdbClient.Execute(request, response)
+		requestErr := c.Execute(request, response)
 
 		if requestErr != nil {
 			logger.Error("failed fetching changes", "reason", requestErr)
