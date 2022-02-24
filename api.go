@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"time"
@@ -83,6 +84,21 @@ func getSingleNodeClient(hostPorts []*ybApi.HostPortPB, logger hclog.Logger) (cl
 	}
 }
 
+func getCDCStreamByID(ybdbClient client.YBClient, streamID []byte) (*ybApi.CDCStreamInfoPB, error) {
+	request := &ybApi.GetCDCStreamRequestPB{
+		StreamId: streamID,
+	}
+	response := &ybApi.GetCDCStreamResponsePB{}
+	requestErr := ybdbClient.Execute(request, response)
+	if requestErr != nil {
+		return nil, requestErr
+	}
+	if err := errors.NewMasterError(response.Error); err != nil {
+		return nil, err
+	}
+	return response.Stream, nil
+}
+
 func listHostPorts(ybdbClient client.YBClient) ([]*ybApi.HostPortPB, error) {
 
 	request := &ybApi.ListTabletServersRequestPB{}
@@ -145,4 +161,58 @@ func listTabletLocations(ybdbClient client.YBClient, tableID []byte) ([]*ybApi.T
 		return nil, requestErr
 	}
 	return response.TabletLocations, errors.NewMasterError(response.Error)
+}
+
+func compareOpId(old, new *ybApi.OpIdPB) int {
+	if *old.Index == *new.Index && *old.Term == *new.Term {
+		return 0 // the same
+	}
+	if *old.Index < *new.Index || *old.Term < *new.Term {
+		return 1 // new is bigger than old
+	}
+	return -1 // old is bigger than new
+}
+
+func waitForTableCreateDone(ybdbClient client.YBClient, tableID []byte) error {
+	chanDone := make(chan struct{})
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+	go func() {
+		for {
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			request := &ybApi.IsCreateTableDoneRequestPB{
+				Table: &ybApi.TableIdentifierPB{
+					TableId: tableID,
+				},
+			}
+			response := &ybApi.IsCreateTableDoneResponsePB{}
+			requestErr := ybdbClient.Execute(request, response)
+			if requestErr != nil {
+				<-time.After(time.Millisecond * 100)
+				continue
+			}
+			if err := errors.NewMasterError(response.Error); err != nil {
+				<-time.After(time.Millisecond * 100)
+				continue
+			}
+			if *response.Done {
+				close(chanDone)
+				return // done
+			}
+
+		}
+	}()
+	select {
+	case <-chanDone:
+		cancelFunc() // cancel the context,
+		return nil
+	case <-time.After(time.Second * 30): // configurable timeout?
+		return fmt.Errorf("timed out")
+	}
 }
