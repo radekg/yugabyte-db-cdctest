@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/radekg/yugabyte-db-go-client/client"
 	"github.com/radekg/yugabyte-db-go-client/configs"
 	"github.com/radekg/yugabyte-db-go-client/errors"
@@ -27,19 +29,52 @@ func createCDCStream(connectedSingleNodeClient client.YBConnectedClient, tableID
 	return response, errors.NewCDCError(response.Error)
 }
 
-func getSuitableClient(hostPorts []*ybApi.HostPortPB) (client.YBConnectedClient, error) {
-	chanClient := make(chan client.YBConnectedClient)
+func getReachableHostPorts(hostPorts []*ybApi.HostPortPB) []*ybApi.HostPortPB {
+	// Given a list of host ports,
+	// discover and keep only those host ports to which we can connect.
+	// This adds overhead at the start, but shortens
+	// subsequent connects if the cluster is configured
+	// with host ports which cannot be reached from the cdc client.
+	newHostPorts := []*ybApi.HostPortPB{}
 	for _, hp := range hostPorts {
-		go func(hostPort *ybApi.HostPortPB) {
-			singleNodeConfig := &configs.YBSingleNodeClientConfig{
-				MasterHostPort: fmt.Sprintf("%s:%d", *hostPort.Host, *hostPort.Port),
-			}
-			singleNodeClient, err := client.NewDefaultConnector().Connect(singleNodeConfig)
-			if err == nil {
-				chanClient <- singleNodeClient
-			}
-		}(hp)
+		singleNodeConfig := &configs.YBSingleNodeClientConfig{
+			MasterHostPort: fmt.Sprintf("%s:%d", *hp.Host, *hp.Port),
+		}
+		singleNodeClient, err := client.NewDefaultConnector().Connect(singleNodeConfig)
+		if err == nil {
+			singleNodeClient.Close()
+			newHostPorts = append(newHostPorts, hp)
+		}
 	}
+	return newHostPorts
+}
+
+func getSingleNodeClient(hostPorts []*ybApi.HostPortPB, logger hclog.Logger) (client.YBConnectedClient, error) {
+	chanClient := make(chan client.YBConnectedClient)
+	go func() {
+	outer:
+		for {
+			r := rand.Intn(len(hostPorts))
+			singleNodeConfig := &configs.YBSingleNodeClientConfig{
+				MasterHostPort: fmt.Sprintf("%s:%d", *hostPorts[r].Host, *hostPorts[r].Port),
+			}
+			singleNodeClient, err := client.NewDefaultConnector().
+				WithLogger(logger).
+				Connect(singleNodeConfig)
+			if err != nil {
+				<-time.After(time.Millisecond * 100)
+				continue
+			}
+			select {
+			case <-singleNodeClient.OnConnected():
+				chanClient <- singleNodeClient
+				break outer
+			case <-singleNodeClient.OnConnectError():
+				<-time.After(time.Millisecond * 100)
+				continue
+			}
+		}
+	}()
 	select {
 	case c := <-chanClient:
 		return c, nil
@@ -71,7 +106,7 @@ func listHostPorts(ybdbClient client.YBClient) ([]*ybApi.HostPortPB, error) {
 		hostPorts = append(hostPorts, ts.Registration.Common.BroadcastAddresses...)
 	}
 
-	return hostPorts, nil
+	return getReachableHostPorts(hostPorts), nil
 }
 
 func listTables(ybdbClient client.YBClient, database string) (*ybApi.ListTablesResponsePB, error) {
