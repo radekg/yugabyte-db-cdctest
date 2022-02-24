@@ -50,6 +50,10 @@ func process(cfg *cdcConfig) int {
 		JSONFormat: cfg.logAsJSON,
 	}).With("table", cfg.table)
 
+	if cfg.stream != "" {
+		logger = logger.With("stream-id", cfg.stream)
+	}
+
 	loggerClient := hclog.New(&hclog.LoggerOptions{
 		Name:       "cdctest-client",
 		Level:      hclog.LevelFromString(cfg.logLevelClient),
@@ -148,6 +152,12 @@ func process(cfg *cdcConfig) int {
 			break
 
 		}
+		parsedStreamID, err := ybdbid.TryParseFromBytes(streamIDBytes)
+		if err != nil {
+			logger.Error("failed parsing new stream ID", "reason", err)
+			return 1
+		}
+		logger = logger.With("stream-id", parsedStreamID.String())
 		logger.Info("created a new CDC stream")
 	} else {
 		reverseParsedStreamID, err := ybdbid.TryParseFromString(cfg.stream)
@@ -156,6 +166,12 @@ func process(cfg *cdcConfig) int {
 			return 1
 		}
 		streamIDBytes = reverseParsedStreamID.Bytes()
+		_, getStreamErr := getCDCStreamByID(ybdbClient, streamIDBytes)
+		if getStreamErr != nil {
+			logger.Error("failed fetching stream info for given stream ID",
+				"reason", getStreamErr)
+			return 1
+		}
 	}
 
 	// handle shutdown gracefully:
