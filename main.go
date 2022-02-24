@@ -30,7 +30,9 @@ func main() {
 	cfg := &cdcConfig{}
 
 	flag.StringVar(&cfg.database, "database", "", "database to use")
-	flag.StringVar(&cfg.logLevel, "log-level", "info", "log level")
+	flag.BoolVar(&cfg.logAsJSON, "log-as-json", false, "log as JSON")
+	flag.StringVar(&cfg.logLevel, "log-level", defaultLogLevel, "log level")
+	flag.StringVar(&cfg.logLevelClient, "log-level-client", defaultLogLevel, "YugabyteDB client log level")
 	flag.StringVar(&cfg.masters, "masters", "127.0.0.1:7100,127.0.0.1:7101,127.0.0.1:7102", "comma-delimited list of master addresses")
 	flag.StringVar(&cfg.stream, "stream-id", "", "stream ID")
 	flag.StringVar(&cfg.table, "table", "", "table to use")
@@ -45,8 +47,14 @@ func process(cfg *cdcConfig) int {
 	logger := hclog.New(&hclog.LoggerOptions{
 		Name:       "cdctest",
 		Level:      hclog.LevelFromString(cfg.logLevel),
-		JSONFormat: true,
-	})
+		JSONFormat: cfg.logAsJSON,
+	}).With("table", cfg.table)
+
+	loggerClient := hclog.New(&hclog.LoggerOptions{
+		Name:       "cdctest-client",
+		Level:      hclog.LevelFromString(cfg.logLevelClient),
+		JSONFormat: cfg.logAsJSON,
+	}).With("table", cfg.table)
 
 	clientConfig := &configs.YBClientConfig{
 		MasterHostPort: strings.Split(cfg.masters, ","),
@@ -60,7 +68,7 @@ func process(cfg *cdcConfig) int {
 	}
 	defer ybdbClient.Close()
 
-	logger.Info("connected to the YugabyteDB cluster")
+	logger.Info("connected to the cluster")
 
 	var table *ybApi.ListTablesResponsePB_TableInfo
 	response, err := listTables(ybdbClient, cfg.database)
@@ -77,11 +85,16 @@ func process(cfg *cdcConfig) int {
 	}
 
 	if table == nil {
-		logger.Error("required table not found", "table", cfg.table)
+		logger.Error("table not found")
 		return 1
 	}
 
-	logger.Info("found the table to run CDC on")
+	if err := waitForTableCreateDone(ybdbClient, table.Id); err != nil {
+		logger.Error("failed while waiting for table create done status", "reason", err)
+		return 1
+	}
+
+	logger.Info("table found")
 
 	hostPorts, err := listHostPorts(ybdbClient)
 	if err != nil {
@@ -115,7 +128,7 @@ func process(cfg *cdcConfig) int {
 	if cfg.stream == "" {
 		for {
 
-			c, err := cp.getClient(logger)
+			c, err := cp.getClient(loggerClient)
 			if err != nil {
 				logger.Error("could not get connected client, going to retry", "reason", err)
 				<-time.After(time.Millisecond * 100)
@@ -161,7 +174,7 @@ func process(cfg *cdcConfig) int {
 	for _, location := range tabletLocations {
 		wg.Add(1)
 		go func(tabletID []byte) {
-			consume(ctx, logger, cp, streamIDBytes, tabletID)
+			consume(ctx, logger, loggerClient, cp, streamIDBytes, tabletID)
 			wg.Done()
 		}(location.TabletId)
 	}
@@ -175,6 +188,7 @@ func process(cfg *cdcConfig) int {
 
 func consume(ctx context.Context,
 	logger hclog.Logger,
+	loggerClient hclog.Logger,
 	cp *clientProvider,
 	streamID, tabletID []byte) {
 
@@ -196,7 +210,7 @@ func consume(ctx context.Context,
 			// reiterate
 		}
 
-		c, err := cp.getClient(logger)
+		c, err := cp.getClient(loggerClient)
 		if err != nil {
 			logger.Error("failed fetching a client", "reason", err)
 			continue
@@ -225,15 +239,15 @@ func consume(ctx context.Context,
 			continue
 		}
 
-		bs, err := json.MarshalIndent(response, "", "  ")
-		if err != nil {
-			logger.Error("failed marshaling JSON", "reason", err)
-			continue
+		if compareOpId(checkpoint.OpId, response.Checkpoint.OpId) == 1 {
+			bs, err := json.MarshalIndent(response, "", "  ")
+			if err != nil {
+				logger.Error("failed marshaling JSON", "reason", err)
+				continue
+			}
+			fmt.Println(string(bs))
+			checkpoint = response.Checkpoint
 		}
-
-		fmt.Println(string(bs))
-
-		checkpoint = response.Checkpoint
 
 	}
 
