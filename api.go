@@ -14,6 +14,35 @@ import (
 	ybApi "github.com/radekg/yugabyte-db-go-proto/v2/yb/api"
 )
 
+func createDatabaseCDCStream(connectedSingleNodeClient client.YBConnectedClient, namespaceName string) (*ybApi.CreateCDCStreamResponsePB, error) {
+	request := &ybApi.CreateCDCStreamRequestPB{
+		//TableId: pstring(parsedTableID.String()),
+		NamespaceName: pstring(namespaceName),
+		RecordType: func() *ybApi.CDCRecordType {
+			v := ybApi.CDCRecordType_CHANGE
+			return &v
+		}(),
+		RecordFormat: func() *ybApi.CDCRecordFormat {
+			v := ybApi.CDCRecordFormat_PROTO
+			return &v
+		}(),
+		SourceType: func() *ybApi.CDCRequestSource {
+			v := ybApi.CDCRequestSource_CDCSDK
+			return &v
+		}(),
+		CheckpointType: func() *ybApi.CDCCheckpointType {
+			v := ybApi.CDCCheckpointType_EXPLICIT
+			return &v
+		}(),
+	}
+	response := &ybApi.CreateCDCStreamResponsePB{}
+	requestErr := connectedSingleNodeClient.Execute(request, response)
+	if requestErr != nil {
+		return nil, requestErr
+	}
+	return response, errors.NewCDCError(response.Error)
+}
+
 func createCDCStream(connectedSingleNodeClient client.YBConnectedClient, tableID []byte) (*ybApi.CreateCDCStreamResponsePB, error) {
 	parsedTableID, err := ybdbid.TryParseFromBytes(tableID)
 	if err != nil {
@@ -21,6 +50,22 @@ func createCDCStream(connectedSingleNodeClient client.YBConnectedClient, tableID
 	}
 	request := &ybApi.CreateCDCStreamRequestPB{
 		TableId: pstring(parsedTableID.String()),
+		RecordType: func() *ybApi.CDCRecordType {
+			v := ybApi.CDCRecordType_CHANGE
+			return &v
+		}(),
+		RecordFormat: func() *ybApi.CDCRecordFormat {
+			v := ybApi.CDCRecordFormat_JSON
+			return &v
+		}(),
+		SourceType: func() *ybApi.CDCRequestSource {
+			v := ybApi.CDCRequestSource_XCLUSTER
+			return &v
+		}(),
+		CheckpointType: func() *ybApi.CDCCheckpointType {
+			v := ybApi.CDCCheckpointType_IMPLICIT
+			return &v
+		}(),
 	}
 	response := &ybApi.CreateCDCStreamResponsePB{}
 	requestErr := connectedSingleNodeClient.Execute(request, response)
