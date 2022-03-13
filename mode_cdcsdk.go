@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -24,47 +23,10 @@ func executeCDCSDK(ybdbClient client.YBClient,
 	loggerClient hclog.Logger,
 	cfg *cdcConfig) int {
 
-	tables := []*ybApi.ListTablesResponsePB_TableInfo{}
-
-	listTablesResponse, err := listTables(ybdbClient, cfg.database)
+	tables, err := listEligibleTables(ybdbClient, cfg.database)
 	if err != nil {
 		logger.Error("failed listing database tables", "reason", err)
 		return 1
-	}
-	if err := errors.NewMasterError(listTablesResponse.GetError()); err != nil {
-		logger.Error("failed listing database tables", "reason", err)
-		return 1
-	}
-
-	for _, tb := range listTablesResponse.Tables {
-		if tb.RelationType == nil {
-			continue
-		}
-		if tb.Namespace == nil {
-			continue
-		}
-		if *tb.RelationType == ybApi.RelationType_INDEX_TABLE_RELATION || *tb.RelationType == ybApi.RelationType_SYSTEM_TABLE_RELATION {
-			continue
-		}
-		if *tb.Namespace.Name != cfg.database {
-			continue
-		}
-
-		tableID, err := ybdbid.TryParseFromBytes(tb.Id)
-		if err != nil {
-			logger.Error("failed parsing table ID as string", "reason", err)
-			continue
-		}
-
-		fullName := strings.Join([]string{
-			*tb.Namespace.Name,
-			*tb.PgschemaName,
-			*tb.Name,
-		}, ".")
-
-		fmt.Println(" =========>", fullName, "=>", tableID.String())
-
-		tables = append(tables, tb)
 	}
 
 	// The CDC framework takes the first table from listed tables
@@ -216,6 +178,8 @@ func consumeCDCSDK(ctx context.Context,
 		if len(response.CdcSdkProtoRecords) == 0 {
 			continue
 		}
+
+		// response.CdcSdkProtoRecords[0].RowMessage.Op
 
 		bs, err := json.MarshalIndent(response, "", "  ")
 		if err != nil {

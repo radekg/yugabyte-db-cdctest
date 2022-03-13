@@ -24,13 +24,14 @@ func executeCDC(ybdbClient client.YBClient,
 	cfg *cdcConfig) int {
 
 	var table *ybApi.ListTablesResponsePB_TableInfo
-	response, err := listTables(ybdbClient, cfg.database)
+
+	tables, err := listEligibleTables(ybdbClient, cfg.database)
 	if err != nil {
-		logger.Error("failed listing tables", "reason", err)
+		logger.Error("failed listing database tables", "reason", err)
 		return 1
 	}
 
-	for _, tableInfo := range response.Tables {
+	for _, tableInfo := range tables {
 		if *tableInfo.Name == cfg.table {
 			table = tableInfo
 			break

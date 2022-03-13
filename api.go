@@ -194,6 +194,33 @@ func listTables(ybdbClient client.YBClient, database string) (*ybApi.ListTablesR
 	return response, errors.NewMasterError(response.Error)
 }
 
+func listEligibleTables(ybdbClient client.YBClient, database string) ([]*ybApi.ListTablesResponsePB_TableInfo, error) {
+	tables := []*ybApi.ListTablesResponsePB_TableInfo{}
+	listTablesResponse, err := listTables(ybdbClient, database)
+	if err != nil {
+		return tables, err
+	}
+	if err := errors.NewMasterError(listTablesResponse.GetError()); err != nil {
+		return tables, err
+	}
+	for _, tb := range listTablesResponse.Tables {
+		if tb.RelationType == nil {
+			continue
+		}
+		if tb.Namespace == nil {
+			continue
+		}
+		if *tb.RelationType == ybApi.RelationType_INDEX_TABLE_RELATION || *tb.RelationType == ybApi.RelationType_SYSTEM_TABLE_RELATION {
+			continue
+		}
+		if *tb.Namespace.Name != database {
+			continue
+		}
+		tables = append(tables, tb)
+	}
+	return tables, nil
+}
+
 func listTabletLocations(ybdbClient client.YBClient, tableID []byte) ([]*ybApi.TabletLocationsPB, error) {
 	request := &ybApi.GetTableLocationsRequestPB{
 		Table: &ybApi.TableIdentifierPB{
