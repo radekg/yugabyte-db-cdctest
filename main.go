@@ -1,10 +1,7 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"flag"
-	"fmt"
 	"math/rand"
 	"os"
 	"strings"
@@ -13,8 +10,6 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/radekg/yugabyte-db-go-client/client"
 	"github.com/radekg/yugabyte-db-go-client/configs"
-	"github.com/radekg/yugabyte-db-go-client/errors"
-	ybApi "github.com/radekg/yugabyte-db-go-proto/v2/yb/api"
 )
 
 func init() {
@@ -81,72 +76,5 @@ func process(cfg *cdcConfig) int {
 
 	logger.Error("Unsupported mode", "mode", cfg.mode)
 	return 1
-
-}
-
-func consume(ctx context.Context,
-	logger hclog.Logger,
-	loggerClient hclog.Logger,
-	cp *clientProvider,
-	streamID, tabletID []byte) {
-
-	checkpoint := &ybApi.CDCCheckpointPB{
-		OpId: &ybApi.OpIdPB{
-			Term:  pint64(0),
-			Index: pint64(0),
-		},
-	}
-
-	<-time.After(time.Millisecond * time.Duration(rand.Intn(100-10)+10))
-
-	for {
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Millisecond * 500):
-			// reiterate
-		}
-
-		c, err := cp.getClient(loggerClient)
-		if err != nil {
-			logger.Error("failed fetching a client", "reason", err)
-			continue
-		}
-
-		request := &ybApi.GetChangesRequestPB{
-			StreamId:       streamID,
-			TabletId:       tabletID,
-			FromCheckpoint: checkpoint,
-		}
-
-		response := &ybApi.GetChangesResponsePB{}
-		requestErr := c.Execute(request, response)
-
-		if requestErr != nil {
-			logger.Error("failed fetching changes", "reason", requestErr)
-			continue
-		}
-
-		if err := errors.NewCDCError(response.Error); err != nil {
-			logger.Error("failed fetching changes", "reason", err)
-			continue
-		}
-
-		if len(response.Records) == 0 {
-			continue
-		}
-
-		if compareOpId(checkpoint.OpId, response.Checkpoint.OpId) == 1 {
-			bs, err := json.MarshalIndent(response, "", "  ")
-			if err != nil {
-				logger.Error("failed marshaling JSON", "reason", err)
-				continue
-			}
-			fmt.Println(string(bs))
-			checkpoint = response.Checkpoint
-		}
-
-	}
 
 }
