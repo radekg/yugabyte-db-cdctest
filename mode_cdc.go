@@ -152,6 +152,21 @@ func executeCDC(ybdbClient client.YBClient,
 
 }
 
+func getCDCStreamByID(ybdbClient client.YBClient, streamID []byte) (*ybApi.CDCStreamInfoPB, error) {
+	request := &ybApi.GetCDCStreamRequestPB{
+		StreamId: streamID,
+	}
+	response := &ybApi.GetCDCStreamResponsePB{}
+	requestErr := ybdbClient.Execute(request, response)
+	if requestErr != nil {
+		return nil, requestErr
+	}
+	if err := errors.NewMasterError(response.Error); err != nil {
+		return nil, err
+	}
+	return response.Stream, nil
+}
+
 func consumeCDC(ctx context.Context,
 	logger hclog.Logger,
 	loggerClient hclog.Logger,
@@ -176,6 +191,7 @@ func consumeCDC(ctx context.Context,
 			// reiterate
 		}
 
+		// TODO: have single client per tablet ID and reconnect if needed
 		c, err := cp.getClient(loggerClient)
 		if err != nil {
 			logger.Error("failed fetching a client", "reason", err)
@@ -193,17 +209,22 @@ func consumeCDC(ctx context.Context,
 
 		if requestErr != nil {
 			logger.Error("failed fetching changes", "reason", requestErr)
+			c.Close()
 			continue
 		}
 
 		if err := errors.NewCDCError(response.Error); err != nil {
 			logger.Error("failed fetching changes", "reason", err)
+			c.Close()
 			continue
 		}
 
 		if len(response.Records) == 0 {
+			c.Close()
 			continue
 		}
+
+		c.Close()
 
 		if compareOpId(checkpoint.OpId, response.Checkpoint.OpId) == 1 {
 			bs, err := json.MarshalIndent(response, "", "  ")

@@ -129,21 +129,6 @@ func getSingleNodeClient(hostPorts []*ybApi.HostPortPB, logger hclog.Logger) (cl
 	}
 }
 
-func getCDCStreamByID(ybdbClient client.YBClient, streamID []byte) (*ybApi.CDCStreamInfoPB, error) {
-	request := &ybApi.GetCDCStreamRequestPB{
-		StreamId: streamID,
-	}
-	response := &ybApi.GetCDCStreamResponsePB{}
-	requestErr := ybdbClient.Execute(request, response)
-	if requestErr != nil {
-		return nil, requestErr
-	}
-	if err := errors.NewMasterError(response.Error); err != nil {
-		return nil, err
-	}
-	return response.Stream, nil
-}
-
 func listHostPorts(ybdbClient client.YBClient) ([]*ybApi.HostPortPB, error) {
 
 	request := &ybApi.ListTabletServersRequestPB{}
