@@ -140,7 +140,7 @@ func executeCDC(ybdbClient client.YBClient,
 	for _, location := range tabletLocations {
 		wg.Add(1)
 		go func(tabletID []byte) {
-			consumeCDC(ctx, logger, loggerClient, cp, streamIDBytes, tabletID)
+			consumeCDC(ctx, logger, loggerClient, cp, streamIDBytes, tabletID, cfg.newest)
 			wg.Done()
 		}(location.TabletId)
 	}
@@ -171,7 +171,8 @@ func consumeCDC(ctx context.Context,
 	logger hclog.Logger,
 	loggerClient hclog.Logger,
 	cp *clientProvider,
-	streamID, tabletID []byte) {
+	streamID, tabletID []byte,
+	newest bool) {
 
 	checkpoint := &ybApi.CDCCheckpointPB{
 		OpId: &ybApi.OpIdPB{
@@ -182,6 +183,21 @@ func consumeCDC(ctx context.Context,
 
 	<-time.After(time.Millisecond * time.Duration(rand.Intn(100-10)+10))
 
+	c, err := cp.getClient(loggerClient)
+	if err != nil {
+		logger.Error("failed fetching a client", "reason", err)
+		return
+	}
+
+	if newest {
+		opid, err := getLastOpIdRequestPB(c, tabletID)
+		if err != nil {
+			logger.Error("failed fetching last opid", "reason", err)
+			return
+		}
+		checkpoint.OpId = opid
+	}
+
 	for {
 
 		select {
@@ -189,13 +205,6 @@ func consumeCDC(ctx context.Context,
 			return
 		case <-time.After(time.Millisecond * 500):
 			// reiterate
-		}
-
-		// TODO: have single client per tablet ID and reconnect if needed
-		c, err := cp.getClient(loggerClient)
-		if err != nil {
-			logger.Error("failed fetching a client", "reason", err)
-			continue
 		}
 
 		request := &ybApi.GetChangesRequestPB{
@@ -208,8 +217,21 @@ func consumeCDC(ctx context.Context,
 		requestErr := c.Execute(request, response)
 
 		if requestErr != nil {
-			logger.Error("failed fetching changes", "reason", requestErr)
-			c.Close()
+
+			if _, ok := requestErr.(*errors.ReceiveError); !ok {
+				// if EOF error, don't log, nothing to read...
+				logger.Error("failed fetching changes", "reason", requestErr)
+			}
+
+			if _, ok := requestErr.(*errors.RequiresReconnectError); ok {
+				reconnectedClient, err := cp.getClient(loggerClient)
+				if err != nil {
+					logger.Error("failed reconnecting a client", "reason", err)
+					return
+				}
+				c = reconnectedClient
+			}
+
 			continue
 		}
 

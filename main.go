@@ -25,6 +25,7 @@ func main() {
 	flag.BoolVar(&cfg.logAsJSON, "log-as-json", false, "log as JSON")
 	flag.StringVar(&cfg.logLevel, "log-level", defaultLogLevel, "log level")
 	flag.StringVar(&cfg.logLevelClient, "log-level-client", defaultLogLevel, "YugabyteDB client log level")
+	flag.BoolVar(&cfg.newest, "newest", false, "When set, skips all previous entries and continues from current operation")
 	flag.StringVar(&cfg.masters, "masters", "127.0.0.1:7100,127.0.0.1:7101,127.0.0.1:7102", "comma-delimited list of master addresses")
 	flag.StringVar(&cfg.stream, "stream-id", "", "stream ID")
 	flag.StringVar(&cfg.table, "table", "", "table to use")

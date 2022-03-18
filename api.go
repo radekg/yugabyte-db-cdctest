@@ -75,6 +75,25 @@ func createCDCStream(connectedSingleNodeClient client.YBConnectedClient, tableID
 	return response, errors.NewCDCError(response.Error)
 }
 
+func getLastOpIdRequestPB(connectedSingleNodeClient client.YBConnectedClient, tabletID []byte) (*ybApi.OpIdPB, error) {
+	// skip previous entries:
+	getLastOpIdRequest := &ybApi.GetLastOpIdRequestPB{
+		TabletId: tabletID,
+		OpidType: func() *ybApi.OpIdType {
+			v := ybApi.OpIdType_COMMITTED_OPID
+			return &v
+		}(),
+	}
+	getLastOpIdResponse := &ybApi.GetLastOpIdResponsePB{}
+	if err := connectedSingleNodeClient.Execute(getLastOpIdRequest, getLastOpIdResponse); err != nil {
+		return nil, err
+	}
+	if err := errors.NewTabletServerError(getLastOpIdResponse.Error); err != nil {
+		return nil, err
+	}
+	return getLastOpIdResponse.Opid, nil
+}
+
 func getReachableHostPorts(hostPorts []*ybApi.HostPortPB) []*ybApi.HostPortPB {
 	// Given a list of host ports,
 	// discover and keep only those host ports to which we can connect.

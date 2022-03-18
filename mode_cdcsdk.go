@@ -134,7 +134,7 @@ func executeCDCSDK(ybdbClient client.YBClient,
 		}
 		logger = logger.With("stream-id", parsedStreamID.String())
 
-		logger.Info("created new CDC SDK stream", "stream-id", parsedStreamID.String())
+		logger.Info("created new CDC SDK stream", "stream-id", parsedStreamID.String(), "num-tables", len(tableIDs))
 
 	}
 
@@ -166,7 +166,7 @@ func executeCDCSDK(ybdbClient client.YBClient,
 	for _, location := range allTableLocations {
 		wg.Add(1)
 		go func(tabletID []byte) {
-			consumeCDCSDK(ctx, logger, loggerClient, cp, streamIDBytes, tabletID)
+			consumeCDCSDK(ctx, logger, loggerClient, cp, streamIDBytes, tabletID, cfg.newest)
 			wg.Done()
 		}(location.TabletId)
 	}
@@ -196,7 +196,8 @@ func consumeCDCSDK(ctx context.Context,
 	logger hclog.Logger,
 	loggerClient hclog.Logger,
 	cp *clientProvider,
-	streamID, tabletID []byte) {
+	streamID, tabletID []byte,
+	newest bool) {
 
 	checkpoint := &ybApi.CDCSDKCheckpointPB{}
 
@@ -206,6 +207,16 @@ func consumeCDCSDK(ctx context.Context,
 	if err != nil {
 		logger.Error("failed fetching a client", "reason", err)
 		return
+	}
+
+	if newest {
+		opid, err := getLastOpIdRequestPB(c, tabletID)
+		if err != nil {
+			logger.Error("failed fetching last opid", "reason", err)
+			return
+		}
+		checkpoint.Term = opid.Term
+		checkpoint.Index = opid.Index
 	}
 
 	for {

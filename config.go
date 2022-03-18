@@ -8,6 +8,7 @@ type cdcConfig struct {
 	logAsJSON      bool
 	logLevel       string
 	logLevelClient string
+	newest         bool
 	masters        string
 	stream         string
 	table          string
