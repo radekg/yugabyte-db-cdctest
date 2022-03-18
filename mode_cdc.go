@@ -140,7 +140,7 @@ func executeCDC(ybdbClient client.YBClient,
 	for _, location := range tabletLocations {
 		wg.Add(1)
 		go func(tabletID []byte) {
-			consumeCDC(ctx, logger, loggerClient, cp, streamIDBytes, tabletID, cfg.newest)
+			consumeCDC(ctx, logger, loggerClient, cp, streamIDBytes, tabletID, cfg.fromLatest)
 			wg.Done()
 		}(location.TabletId)
 	}

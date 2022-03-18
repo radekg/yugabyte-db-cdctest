@@ -166,7 +166,7 @@ func executeCDCSDK(ybdbClient client.YBClient,
 	for _, location := range allTableLocations {
 		wg.Add(1)
 		go func(tabletID []byte) {
-			consumeCDCSDK(ctx, logger, loggerClient, cp, streamIDBytes, tabletID, cfg.newest)
+			consumeCDCSDK(ctx, logger, loggerClient, cp, streamIDBytes, tabletID, cfg.fromLatest)
 			wg.Done()
 		}(location.TabletId)
 	}
