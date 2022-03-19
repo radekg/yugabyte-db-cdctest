@@ -77,21 +77,17 @@ func createCDCStream(connectedSingleNodeClient client.YBConnectedClient, tableID
 
 func getLastOpIdRequestPB(connectedSingleNodeClient client.YBConnectedClient, tabletID []byte) (*ybApi.OpIdPB, error) {
 	// skip previous entries:
-	getLastOpIdRequest := &ybApi.GetLastOpIdRequestPB{
+	getLastOpIdRequest := &ybApi.GetLatestEntryOpIdRequestPB{
 		TabletId: tabletID,
-		OpidType: func() *ybApi.OpIdType {
-			v := ybApi.OpIdType_COMMITTED_OPID
-			return &v
-		}(),
 	}
-	getLastOpIdResponse := &ybApi.GetLastOpIdResponsePB{}
+	getLastOpIdResponse := &ybApi.GetLatestEntryOpIdResponsePB{}
 	if err := connectedSingleNodeClient.Execute(getLastOpIdRequest, getLastOpIdResponse); err != nil {
 		return nil, err
 	}
-	if err := errors.NewTabletServerError(getLastOpIdResponse.Error); err != nil {
+	if err := errors.NewCDCError(getLastOpIdResponse.Error); err != nil {
 		return nil, err
 	}
-	return getLastOpIdResponse.Opid, nil
+	return getLastOpIdResponse.OpId, nil
 }
 
 func getReachableHostPorts(hostPorts []*ybApi.HostPortPB) []*ybApi.HostPortPB {
