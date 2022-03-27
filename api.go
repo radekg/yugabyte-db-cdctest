@@ -14,13 +14,26 @@ import (
 	ybApi "github.com/radekg/yugabyte-db-go-proto/v2/yb/api"
 )
 
-func createCDCStream(connectedSingleNodeClient client.YBConnectedClient, tableID []byte) (*ybApi.CreateCDCStreamResponsePB, error) {
-	parsedTableID, err := ybdbid.TryParseFromBytes(tableID)
-	if err != nil {
-		return nil, err
-	}
+func createDatabaseCDCStream(connectedSingleNodeClient client.YBConnectedClient, namespaceName string) (*ybApi.CreateCDCStreamResponsePB, error) {
 	request := &ybApi.CreateCDCStreamRequestPB{
-		TableId: pstring(parsedTableID.String()),
+		//TableId: pstring(parsedTableID.String()),
+		NamespaceName: pstring(namespaceName),
+		RecordType: func() *ybApi.CDCRecordType {
+			v := ybApi.CDCRecordType_CHANGE
+			return &v
+		}(),
+		RecordFormat: func() *ybApi.CDCRecordFormat {
+			v := ybApi.CDCRecordFormat_PROTO
+			return &v
+		}(),
+		SourceType: func() *ybApi.CDCRequestSource {
+			v := ybApi.CDCRequestSource_CDCSDK
+			return &v
+		}(),
+		CheckpointType: func() *ybApi.CDCCheckpointType {
+			v := ybApi.CDCCheckpointType_EXPLICIT
+			return &v
+		}(),
 	}
 	response := &ybApi.CreateCDCStreamResponsePB{}
 	requestErr := connectedSingleNodeClient.Execute(request, response)
@@ -28,6 +41,53 @@ func createCDCStream(connectedSingleNodeClient client.YBConnectedClient, tableID
 		return nil, requestErr
 	}
 	return response, errors.NewCDCError(response.Error)
+}
+
+func createCDCStream(connectedSingleNodeClient client.YBConnectedClient, tableID []byte) (*ybApi.CreateCDCStreamResponsePB, error) {
+	parsedTableID, err := ybdbid.TryParseFromBytes(tableID)
+	if err != nil {
+		return nil, err
+	}
+	request := &ybApi.CreateCDCStreamRequestPB{
+		TableId: pstring(parsedTableID.String()),
+		RecordType: func() *ybApi.CDCRecordType {
+			v := ybApi.CDCRecordType_CHANGE
+			return &v
+		}(),
+		RecordFormat: func() *ybApi.CDCRecordFormat {
+			v := ybApi.CDCRecordFormat_JSON
+			return &v
+		}(),
+		SourceType: func() *ybApi.CDCRequestSource {
+			v := ybApi.CDCRequestSource_XCLUSTER
+			return &v
+		}(),
+		CheckpointType: func() *ybApi.CDCCheckpointType {
+			v := ybApi.CDCCheckpointType_IMPLICIT
+			return &v
+		}(),
+	}
+	response := &ybApi.CreateCDCStreamResponsePB{}
+	requestErr := connectedSingleNodeClient.Execute(request, response)
+	if requestErr != nil {
+		return nil, requestErr
+	}
+	return response, errors.NewCDCError(response.Error)
+}
+
+func getLastOpIdRequestPB(connectedSingleNodeClient client.YBConnectedClient, tabletID []byte) (*ybApi.OpIdPB, error) {
+	// skip previous entries:
+	getLastOpIdRequest := &ybApi.GetLatestEntryOpIdRequestPB{
+		TabletId: tabletID,
+	}
+	getLastOpIdResponse := &ybApi.GetLatestEntryOpIdResponsePB{}
+	if err := connectedSingleNodeClient.Execute(getLastOpIdRequest, getLastOpIdResponse); err != nil {
+		return nil, err
+	}
+	if err := errors.NewCDCError(getLastOpIdResponse.Error); err != nil {
+		return nil, err
+	}
+	return getLastOpIdResponse.OpId, nil
 }
 
 func getReachableHostPorts(hostPorts []*ybApi.HostPortPB) []*ybApi.HostPortPB {
@@ -84,21 +144,6 @@ func getSingleNodeClient(hostPorts []*ybApi.HostPortPB, logger hclog.Logger) (cl
 	}
 }
 
-func getCDCStreamByID(ybdbClient client.YBClient, streamID []byte) (*ybApi.CDCStreamInfoPB, error) {
-	request := &ybApi.GetCDCStreamRequestPB{
-		StreamId: streamID,
-	}
-	response := &ybApi.GetCDCStreamResponsePB{}
-	requestErr := ybdbClient.Execute(request, response)
-	if requestErr != nil {
-		return nil, requestErr
-	}
-	if err := errors.NewMasterError(response.Error); err != nil {
-		return nil, err
-	}
-	return response.Stream, nil
-}
-
 func listHostPorts(ybdbClient client.YBClient) ([]*ybApi.HostPortPB, error) {
 
 	request := &ybApi.ListTabletServersRequestPB{}
@@ -147,6 +192,33 @@ func listTables(ybdbClient client.YBClient, database string) (*ybApi.ListTablesR
 	}
 
 	return response, errors.NewMasterError(response.Error)
+}
+
+func listEligibleTables(ybdbClient client.YBClient, database string) ([]*ybApi.ListTablesResponsePB_TableInfo, error) {
+	tables := []*ybApi.ListTablesResponsePB_TableInfo{}
+	listTablesResponse, err := listTables(ybdbClient, database)
+	if err != nil {
+		return tables, err
+	}
+	if err := errors.NewMasterError(listTablesResponse.GetError()); err != nil {
+		return tables, err
+	}
+	for _, tb := range listTablesResponse.Tables {
+		if tb.RelationType == nil {
+			continue
+		}
+		if tb.Namespace == nil {
+			continue
+		}
+		if *tb.RelationType == ybApi.RelationType_INDEX_TABLE_RELATION || *tb.RelationType == ybApi.RelationType_SYSTEM_TABLE_RELATION {
+			continue
+		}
+		if *tb.Namespace.Name != database {
+			continue
+		}
+		tables = append(tables, tb)
+	}
+	return tables, nil
 }
 
 func listTabletLocations(ybdbClient client.YBClient, tableID []byte) ([]*ybApi.TabletLocationsPB, error) {
